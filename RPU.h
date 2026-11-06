@@ -22,7 +22,7 @@
 #ifndef RPU_OS_H
 
 #define RPU_OS_MAJOR_VERSION  5
-#define RPU_OS_MINOR_VERSION  8
+#define RPU_OS_MINOR_VERSION  16
 
 struct PlayfieldAndCabinetSwitch {
   byte switchNum;
@@ -63,6 +63,7 @@ struct PlayfieldAndCabinetSwitch {
 #define RPU_RET_OPTION_NOT_SUPPORTED      0x0080
 #define RPU_RET_6800_DETECTED             0x0100
 #define RPU_RET_6802_OR_8_DETECTED        0x0200
+#define RPU_RET_HOST_NOT_DETECTED         0x0400
 #define RPU_RET_DIAGNOSTIC_REQUESTED      0x1000
 #define RPU_RET_SELECTOR_SWITCH_ON        0x2000
 #define RPU_RET_CREDIT_RESET_BUTTON_HIT   0x4000
@@ -74,13 +75,27 @@ struct PlayfieldAndCabinetSwitch {
 unsigned long RPU_InitializeMPU(  
   unsigned long initOptions = RPU_CMD_BOOT_ORIGINAL_IF_CREDIT_RESET | RPU_CMD_BOOT_ORIGINAL_IF_NOT_SWITCH_CLOSED | RPU_CMD_PERFORM_MPU_TEST, 
   byte creditResetSwitch = 0xFF );
+// The RPU_SetupGameSwitches is only used for Bally/Stern, since those games respond to 
+// "immediate" solenoids (slings, pops) in software -- this hands that control over to the
+// library for responsiveness
 void RPU_SetupGameSwitches(int s_numSwitches, int s_numPrioritySwitches, PlayfieldAndCabinetSwitch *s_gameSwitchArray);
+// The RPU_GetDipSwitches function requires the define RPU_OS_USE_DIP_SWITCHES to be
+// set in the configuration file (RPU_Config.h)
 byte RPU_GetDipSwitches(byte index);
 
 //   Swtiches
 byte RPU_PullFirstFromSwitchStack();
+// If a switch is normally closed instead of normally open,
+// putting it on this list (RPU_SetSwitchInversion) will 
+// reverse its behavior in the library
+// so software debouncing works properly
+boolean RPU_SetSwitchInversion(byte switchNum);
+// The RPU_ReadSingleSwitchState functions reads the current
+// state of the switch and is not software-debounced
 boolean RPU_ReadSingleSwitchState(byte switchNum);
 void RPU_PushToSwitchStack(byte switchNumber);
+// The RPU_GetUpDownSwitchState is only useful for Williams-style 
+// machines that have an up/down switch behind the coin door
 boolean RPU_GetUpDownSwitchState(); // This always returns true for RPU_MPU_ARCHITECTURE==1 (no up/down switch)
 void RPU_ClearUpDownSwitchState();
 
@@ -88,6 +103,7 @@ void RPU_ClearUpDownSwitchState();
 void RPU_PushToSolenoidStack(byte solenoidNumber, byte numPushes, boolean disableOverride = false);
 void RPU_SetCoinLockout(boolean lockoutOff = false, byte solbit = CONTSOL_DISABLE_COIN_LOCKOUT);
 void RPU_SetDisableFlippers(boolean disableFlippers = true, byte solbit = CONTSOL_DISABLE_FLIPPERS);
+boolean RPU_GetDisableFlippers(byte solbit = CONTSOL_DISABLE_FLIPPERS);
 void RPU_SetContinuousSolenoidBit(boolean bitOn, byte solBit = 0x10);
 #if (RPU_MPU_ARCHITECTURE>=10)
 void RPU_SetContinuousSolenoid(boolean solOn, byte solNum);
@@ -96,8 +112,10 @@ boolean RPU_FireContinuousSolenoid(byte solBit, byte numCyclesToFire);
 byte RPU_ReadContinuousSolenoids();
 void RPU_DisableSolenoidStack();
 void RPU_EnableSolenoidStack();
+boolean RPU_IsSolenoidStackEnabled();
 boolean RPU_PushToTimedSolenoidStack(byte solenoidNumber, byte numPushes, unsigned long whenToFire, boolean disableOverride = false);
 void RPU_UpdateTimedSolenoidStack(unsigned long curTime);
+void RPU_SetSolenoidDefaultPulse(byte solenoidNumber, byte pulseTimeMS);
 
 //   Displays
 byte RPU_SetDisplay(int displayNumber, unsigned long value, boolean blankByMagnitude=false, byte minDigits=2, boolean showCommasByMagnitude=false);
@@ -107,7 +125,7 @@ void RPU_SetDisplayMatch(int value, boolean displayOn = true, boolean showBothDi
 void RPU_SetDisplayBallInPlay(int value, boolean displayOn = true, boolean showBothDigits=true);
 void RPU_SetDisplayFlash(int displayNumber, unsigned long value, unsigned long curTime, int period=500, byte minDigits=2);
 void RPU_SetDisplayFlashCredits(unsigned long curTime, int period=100);
-void RPU_CycleAllDisplays(unsigned long curTime, byte digitNum=0); // Self-test function
+void RPU_CycleAllDisplays(unsigned long curTime, byte digitNum=0, byte digitValue=0xFF); // Self-test function
 byte RPU_GetDisplayBlank(int displayNumber);
 #if (RPU_MPU_ARCHITECTURE==15)
 byte RPU_SetDisplayText(int displayNumber, char *text, boolean blankByLength=true);
@@ -125,6 +143,38 @@ void RPU_SetDimDivisor(byte level=1, byte divisor=2); // 2 means 50% duty cycle,
 byte RPU_ReadLampState(int lampNum);
 byte RPU_ReadLampDim(int lampNum);
 int RPU_ReadLampFlash(int lampNum);
+#if defined(RPU_OS_USE_LAMP_OVERLAYS)
+// Lamp overlays can be used to create animations that sweep
+// over the playfield and will mask (on or off) the current state of the 
+// lamps set by RPU_SetLampState. Clearing either overlay
+// will also turn off the "apply" flag in the library, so the 
+// overlay will be disabled until an apply function is called again.
+void RPU_ClearLampsOnOverlay();
+void RPU_ClearLampsOffOverlay();
+// The function RPU_AddLampToOverlay will add a lamp to the On or Off
+// overlay, depending on the lampsOnOverlay flag. The lamp number will
+// be added to the mask and will remain in the mask until it's cleared
+void RPU_AddLampToOverlay(boolean lampsOnOverlay, int lampNum);
+// The function RPU_RemoveLampFromOverlay will remove a single lamp
+// from an overlay (lampsOn or lampsOff overlay depending on lampsOnOverlay flag)
+void RPU_RemoveLampFromOverlay(boolean lampsOnOverlay, int lampNum);
+// The function RPU_AddLampByteToOverlay will add a byte of lamps to the 
+// overlay, depending on the lampsOnOverlay flag. If lampsOnOverlay is set,
+// then any 1s in the lampValues will be turned on in that lampsOn overlay byte. If 
+// lampsOnOverlay is unset, the any 1s in the lampValues will be added
+// to the lampsOff overlay byte.
+void RPU_AddLampByteToOverlay(boolean lampsOnOverlay, byte lampByte, byte lampValues);
+// The function RPU_RemoveLampByteFromOverlay will remove a byte of lamps from the 
+// overlay, depending on the lampsOnOverlay flag. If lampsOnOverlay is set,
+// then any 1s in the lampValues will be removed from that lampsOn overlay byte. If 
+// lampsOnOverlay is unset, the any 1s in the lampValues will be removed from
+// lampsOff overlay byte.
+void RPU_RemoveLampByteFromOverlay(boolean lampsOnOverlay, byte lampByte, byte lampValues);
+// The apply functions will turn on the overlay (lampsOn or lampsOff) until it is cleared
+void RPU_ApplyLampsOnOverlay();
+void RPU_ApplyLampsOffOverlay();
+#endif
+
 
 // Sound Functions
 #ifdef RPU_OS_USE_S_AND_T
@@ -138,7 +188,7 @@ void RPU_PlaySB100Chime(byte soundByte);
 #endif 
 #endif
 
-#ifdef RPU_OS_USE_DASH51
+#if defined(RPU_OS_USE_DASH50) || defined(RPU_OS_USE_DASH51)
 void RPU_PlaySoundDash51(byte soundByte);
 #endif
 
@@ -174,8 +224,8 @@ void RPU_WriteULToEEProm(unsigned short startByte, unsigned long value);
 
 
 #ifdef RPU_CPP_FILE
-  int NumGameSwitches = 0;
-  int NumGamePrioritySwitches = 0;
+  byte NumGameSwitches = 0;
+  byte NumGamePrioritySwitches = 0;
   PlayfieldAndCabinetSwitch *GameSwitches = NULL;
 
 #if (RPU_MPU_ARCHITECTURE==15)

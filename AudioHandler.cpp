@@ -95,6 +95,8 @@ int i;
 // **************************************************************
 void wavTrigger::update(void) {
 
+if (RPU_OS_HARDWARE_REV<=3) return;
+
 int i;
 uint8_t dat;
 uint8_t voice;
@@ -146,7 +148,7 @@ uint16_t track;
 
         case RSP_TRACK_REPORT:
           track = rxMessage[2];
-          track = (track << 8) + rxMessage[1] + 1;
+          track = (track * 256) + rxMessage[1] + 1;
           voice = rxMessage[3];
           if (voice < MAX_NUM_VOICES) {
             if (rxMessage[4] == 0) {
@@ -172,15 +174,16 @@ uint16_t track;
           version[VERSION_STRING_LEN - 1] = 0;
           versionRcvd = true;
           // ==========================
-          //Serial.write(version);
-          //Serial.write("\n");
+//          Serial.write("WAV Version: ");
+//          Serial.write(version);
+//          Serial.write("\n");
           // ==========================
         break;
 
         case RSP_SYSTEM_INFO:
           numVoices = rxMessage[1];
           numTracks = rxMessage[3];
-          numTracks = (numTracks << 8) + rxMessage[2];
+          numTracks = (numTracks * 256) + rxMessage[2];
           sysinfoRcvd = true;
           // ==========================
           ///\Serial.print("Sys info received\n");
@@ -212,6 +215,14 @@ bool fResult = false;
   
   return fResult;
 }
+
+
+int wavTrigger::getPlayingTrack(int voiceNum) {
+  if (voiceNum>=MAX_NUM_VOICES || voiceNum<0) return 0xFFFF;
+  return (voiceTable[voiceNum]);
+}
+
+
 
 // **************************************************************
 void wavTrigger::masterGain(int gain) {
@@ -321,7 +332,6 @@ void wavTrigger::trackLoad(int trk, bool lock) {
 
 // **************************************************************
 void wavTrigger::trackStop(int trk) {
-
   trackControl(trk, TRK_STOP);
 }
 
@@ -383,7 +393,6 @@ uint8_t txbuf[9];
 void wavTrigger::stopAllTracks(void) {
 
 uint8_t txbuf[5];
-
   txbuf[0] = SOM1;
   txbuf[1] = SOM2;
   txbuf[2] = 0x05;
@@ -491,6 +500,7 @@ AudioHandler::AudioHandler() {
   ClearSoundCardQueue();
   ClearNotificationStack();
   currentBackgroundTrack = BACKGROUND_TRACK_NONE;
+  musicStopped = true;
   soundtrackRandomOrder = true;
   nextSoundtrackPlayTime = 0;
   backgroundSongEndTime = 0;
@@ -500,7 +510,8 @@ AudioHandler::AudioHandler() {
   voiceNotificationStackLast = 0;
   currentNotificationPriority = 0;
   currentNotificationPlaying = INVALID_SOUND_INDEX;
-  ducking = 20;
+  musicDucking = 20;
+  soundFXDucking = 20;
 
   for (int count=0; count<NUMBER_OF_SONGS_REMEMBERED; count++) lastSongsPlayed[count] = BACKGROUND_TRACK_NONE;
 
@@ -560,9 +571,12 @@ void AudioHandler::SetMusicVolume(byte s_volume) {
 }
 
 void AudioHandler::SetMusicDuckingGain(byte s_ducking) {
-  ducking = s_ducking;
+  musicDucking = s_ducking;
 }
 
+void AudioHandler::SetSoundFXDuckingGain(byte s_ducking) {
+  soundFXDucking = s_ducking;
+}
 
 
 boolean AudioHandler::StopSound(unsigned short soundIndex) {
@@ -575,15 +589,19 @@ boolean AudioHandler::StopSound(unsigned short soundIndex) {
 }
 
 boolean AudioHandler::StopAllMusic() {
+  curSoundtrack = NULL;
 #if defined(RPU_OS_USE_WAV_TRIGGER) || defined(RPU_OS_USE_WAV_TRIGGER_1p3)
   if (currentBackgroundTrack!=BACKGROUND_TRACK_NONE) {
+//    char buf[128];
+//    sprintf(buf, "Stopping background music (%d)\n", currentBackgroundTrack);
+//    Serial.write(buf);
     wTrig.trackStop(currentBackgroundTrack);
     currentBackgroundTrack = BACKGROUND_TRACK_NONE;
+    musicStopped = true;
     return true;
   }
 #endif
   currentBackgroundTrack = BACKGROUND_TRACK_NONE;
-  curSoundtrack = NULL;
   return false;
 }
 
@@ -668,6 +686,23 @@ byte AudioHandler::GetTopNotificationPriority() {
   return topPriorityFound;
 }
 
+void AudioHandler::DuckCurrentSoundEffects() {
+
+  // We can't duck if we don't have bi-directional communication
+  // So <=3 revs have to return
+  if (RPU_OS_HARDWARE_REV<=3) return;
+  
+#if defined (RPU_OS_USE_WAV_TRIGGER) || defined (RPU_OS_USE_WAV_TRIGGER_1p3)
+  for (int count=0; count<MAX_NUM_VOICES; count++) {
+    int trackNum = wTrig.getPlayingTrack(count);
+    if (trackNum!=((int)0xFFFF) && trackNum!=((int)currentBackgroundTrack) && trackNum!=((int)currentNotificationPlaying)) {
+      // This is a sound effect that needs to be ducked
+      wTrig.trackFade(trackNum, soundFXGain - soundFXDucking, 500, 0);
+    }
+  }
+#endif  
+  
+}
 
 
 
@@ -679,11 +714,20 @@ boolean AudioHandler::QueuePrioritizedNotification(unsigned short notificationIn
     ClearNotificationStack();  
   }
 
+  // Replace current notification instead of stacking for Rev 3 hardware
+  if (RPU_OS_HARDWARE_REV <= 3 && currentNotificationPlaying != INVALID_SOUND_INDEX) {
+    wTrig.trackStop(currentNotificationPlaying);
+    currentNotificationPlaying = INVALID_SOUND_INDEX;
+  }
+
   // If there's nothing playing, we can play it now
   if (currentNotificationPlaying == INVALID_SOUND_INDEX) {
     if (currentBackgroundTrack != BACKGROUND_TRACK_NONE) {
-      wTrig.trackFade(currentBackgroundTrack, musicGain - ducking, 500, 0);
+      // We only want to duck if the hardware rev is greater than 3
+      // because only 4 and above konw when a track has finished playing
+      if (RPU_OS_HARDWARE_REV>3) wTrig.trackFade(currentBackgroundTrack, musicGain - musicDucking, 500, 0);
     }
+    DuckCurrentSoundEffects();
     if (notificationLength) nextVoiceNotificationPlayTime = currentTime + (unsigned long)(notificationLength);
     else nextVoiceNotificationPlayTime = 0;
 
@@ -762,8 +806,11 @@ boolean AudioHandler::ServiceNotificationQueue(unsigned long currentTime) {
 
     if (nextNotification != VOICE_NOTIFICATION_STACK_EMPTY) {
       if (currentBackgroundTrack != BACKGROUND_TRACK_NONE) {
-        wTrig.trackFade(currentBackgroundTrack, musicGain - ducking, 500, 0);
+        // We only want to duck if the hardware rev is greater than 3
+        // because only 4 and above konw when a track has finished playing
+        if (RPU_OS_HARDWARE_REV>3) wTrig.trackFade(currentBackgroundTrack, musicGain - musicDucking, 500, 0);
       }
+      DuckCurrentSoundEffects();
       if (nextDuration!=0) nextVoiceNotificationPlayTime = currentTime + (unsigned long)(nextDuration);
       else nextVoiceNotificationPlayTime = 0;
       wTrig.trackPlayPoly(nextNotification);
@@ -774,7 +821,9 @@ boolean AudioHandler::ServiceNotificationQueue(unsigned long currentTime) {
     } else {
       // No more notifications -- set the volume back up and clear the variable
       if (currentBackgroundTrack != BACKGROUND_TRACK_NONE) {
-        wTrig.trackFade(currentBackgroundTrack, musicGain, 1500, 0);
+        // We only want to un-duck if the hardware rev is greater than 3
+        // because only 4 and above konw when a track has finished playing
+        if (RPU_OS_HARDWARE_REV>3) wTrig.trackFade(currentBackgroundTrack, musicGain, 1500, 0);
       }
       nextVoiceNotificationPlayTime = 0;
       currentNotificationPlaying = INVALID_SOUND_INDEX;
@@ -782,7 +831,9 @@ boolean AudioHandler::ServiceNotificationQueue(unsigned long currentTime) {
       queueStillHasEntries = false;
     }
     
-  } 
+  } else {
+    queueStillHasEntries = false;
+  }
 #else
   (void)currentTime;
 #endif
@@ -858,6 +909,12 @@ boolean AudioHandler::PlaySound(unsigned short soundIndex, byte audioType, byte 
 
   boolean soundPlayed = false;
   int gain = soundFXGain;
+  if (currentNotificationPlaying!=INVALID_SOUND_INDEX) {
+    // reduce gain (by ducking amount) if there's a notification playing
+    // We only want to duck if the hardware rev is greater than 3
+    // because only 4 and above konw when a track has finished playing
+    if (RPU_OS_HARDWARE_REV>3) gain -= soundFXDucking;
+  }
   if (overrideVolume!=0xFF) gain = ConvertVolumeSettingToGain(overrideVolume);
 
   if (audioType==AUDIO_PLAY_TYPE_CHIMES) {
@@ -1094,11 +1151,13 @@ boolean AudioHandler::PlayBackgroundSong(unsigned short trackIndex, boolean loop
   boolean trackPlayed = false;
 
   if (trackIndex!=BACKGROUND_TRACK_NONE) {
-    currentBackgroundTrack = trackIndex;        
+    musicStopped = false;
+    currentBackgroundTrack = trackIndex;
 #if defined(RPU_OS_USE_WAV_TRIGGER) || defined(RPU_OS_USE_WAV_TRIGGER_1p3)
 #ifdef RPU_OS_USE_WAV_TRIGGER_1p3
     wTrig.trackPlayPoly(trackIndex, true);
     trackPlayed = true;
+//    Serial.write("Playing background song\n");
 #else
     wTrig.trackPlayPoly(trackIndex);
     trackPlayed = true;
@@ -1115,6 +1174,8 @@ boolean AudioHandler::PlayBackgroundSong(unsigned short trackIndex, boolean loop
 
 void AudioHandler::StartNextSoundtrackSong(unsigned long currentTime) {
 
+  if (curSoundtrack==NULL) return;
+  
   unsigned int retSong = (currentTime%curSoundtrackEntries);
   boolean songRecentlyPlayed = false;
 
@@ -1144,6 +1205,7 @@ void AudioHandler::StartNextSoundtrackSong(unsigned long currentTime) {
 #endif
   }
   currentBackgroundTrack = curSoundtrack[retSong].TrackIndex;
+  musicStopped = false;
 
 #if defined(RPU_OS_USE_WAV_TRIGGER) || defined(RPU_OS_USE_WAV_TRIGGER_1p3)
 #ifdef RPU_OS_USE_WAV_TRIGGER_1p3
@@ -1159,18 +1221,29 @@ void AudioHandler::StartNextSoundtrackSong(unsigned long currentTime) {
 
 
 void AudioHandler::ManageBackgroundSong(unsigned long currentTime) {
-  if (curSoundtrack==NULL) return; 
-
-  if (backgroundSongEndTime!=0) {
-    if (currentTime>=backgroundSongEndTime) {
-      StartNextSoundtrackSong(currentTime);
-    }
-  } else {
+  if (curSoundtrack==NULL /* && currentBackgroundTrack!=BACKGROUND_TRACK_NONE */) {
 #if defined(RPU_OS_USE_WAV_TRIGGER) || defined(RPU_OS_USE_WAV_TRIGGER_1p3)
-    if (!wTrig.isTrackPlaying(currentBackgroundTrack)) {
-      StartNextSoundtrackSong(currentTime);
-    }
+      if (currentBackgroundTrack!=BACKGROUND_TRACK_NONE) {
+        if (wTrig.isTrackPlaying(currentBackgroundTrack)) {
+          musicStopped = false;
+        } else {
+          musicStopped = true;
+        }
+      }
 #endif
+  } else {
+
+    if (backgroundSongEndTime!=0) {
+      if (currentTime>=backgroundSongEndTime) {
+        StartNextSoundtrackSong(currentTime);
+      }
+    } else {
+#if defined(RPU_OS_USE_WAV_TRIGGER) || defined(RPU_OS_USE_WAV_TRIGGER_1p3)
+      if (!wTrig.isTrackPlaying(currentBackgroundTrack)) {
+        StartNextSoundtrackSong(currentTime);
+      }
+#endif
+    }
   }
 }
 

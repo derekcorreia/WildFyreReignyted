@@ -33,6 +33,8 @@
 // Hardware Rev 100 (different order of magnitude because it's a different approach) plugs into the CPU socket
 // Hardware Rev 101 - first RPU CPU interposer release board
 // Hardware Rev 102 - second RPU (with display and WIFI socket)
+// Hardware Rev 200 - RPU on System Alpha
+// Wild Fyre Reignyted requires Rev 3 or higher. Set this to match your board.
 #define RPU_OS_HARDWARE_REV   102
 
 // Available Architectures (0-9 is for B/S Boards, 10-19 is for W)
@@ -67,6 +69,8 @@
 //#define RPU_OS_USE_WTYPE_1_SOUND
 //#define RPU_OS_USE_WTYPE_2_SOUND
 //#define RPU_OS_USE_W11_SOUND
+//#define RPU_OS_USE_LAMP_OVERLAYS
+#define RPU_STREAMLINED_IMMEDIATE_SOLENOIDS
 
 
 
