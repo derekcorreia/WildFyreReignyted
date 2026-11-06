@@ -20,9 +20,16 @@
 AudioHandler Audio;
 #endif
 
-#define PINBALL_MACHINE_BASE_MAJOR_VERSION  2024
-#define PINBALL_MACHINE_BASE_MINOR_VERSION  914
+#define PINBALL_MACHINE_BASE_MAJOR_VERSION  2026
+#define PINBALL_MACHINE_BASE_MINOR_VERSION  1105
+
+// On Rev 3 and below, the WAV Trigger uses the same Serial port as debug
+// messages, so debug output has to stay off on those boards.
+#if (RPU_OS_HARDWARE_REV<=3)
+#define DEBUG_MESSAGES  0
+#else
 #define DEBUG_MESSAGES  1
+#endif
 
 
 
@@ -1465,9 +1472,6 @@ int RunAttractMode(int curState, boolean curStateChanged) {
       if (AttractLastLadderBonus > 20) AttractLastLadderBonus = 0;
       AttractLastLadderTime = CurrentTime;
     }
-#if not defined (BALLY_STERN_OS_SOFTWARE_DISPLAY_INTERRUPT)
-    RPU_DataRead(0);
-#endif
   } else {
     //ShowLampAnimation(2, 40, CurrentTime, 14, false, false);
   }
@@ -1963,9 +1967,6 @@ int ManageGameMode() {
     ShowEjectLamps();
     ShowDropTargetLamps();
     ShowBonusXArrowLamps();
-#if not defined (BALLY_STERN_OS_SOFTWARE_DISPLAY_INTERRUPT)
-    RPU_DataRead(0);
-#endif
     ShowShootAgainLamps();
   }
 
@@ -2615,8 +2616,6 @@ int RunGamePlayMode(int curState, boolean curStateChanged) {
 
 void loop() {
 
-  RPU_DataRead(0);
-
   CurrentTime = millis();
   int newMachineState = MachineState;
 
@@ -2635,7 +2634,9 @@ void loop() {
     MachineStateChanged = false;
   }
 
-  RPU_ApplyFlashToLamps(CurrentTime);
-  RPU_UpdateTimedSolenoidStack(CurrentTime);
+  RPU_Update(CurrentTime);
+#if defined(RPU_OS_USE_WAV_TRIGGER) || defined(RPU_OS_USE_WAV_TRIGGER_1p3)
+  Audio.Update(CurrentTime);
+#endif
 
 }
